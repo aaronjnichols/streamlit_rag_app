@@ -1,0 +1,32 @@
+# Virtual environment
+venv/
+.venv/
+*/venv/
+*/.venv/
+env/
+.env
+*/env/
+*/.env/
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE files (optional, add yours if needed)
+.idea/
+.vscode/
+
+# Data files (FAISS index, metadata - check paths in utils.py)
+data/
+
+# Secrets file (if you ever create one)
+.env
+
+# Specs
+specs.md
+.cursorrules
+
+# Streamlit secrets (if used)
+.streamlit/secrets.toml

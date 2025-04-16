@@ -1,0 +1,7 @@
+streamlit
+anthropic
+pypdf2
+sentence-transformers
+tiktoken
+uuid # For generating unique IDs, implied by pseudo-code 
+faiss-cpu
