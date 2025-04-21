@@ -118,8 +118,8 @@ def get_tokenizer():
     return tiktoken.get_encoding("cl100k_base")
 
 def extract_text_from_pdf(pdf_file):
-    """Extracts text from an uploaded PDF file, handling potential issues."""
-    text = ""
+    """Extracts text from an uploaded PDF file page by page."""
+    pages_content = []
     try:
         pdf_file.seek(0) # Reset file pointer
         reader = PyPDF2.PdfReader(pdf_file)
@@ -127,43 +127,63 @@ def extract_text_from_pdf(pdf_file):
             page = reader.pages[page_num]
             page_text = page.extract_text()
             if page_text: # Ensure text was extracted
-                # Add page number identifier? Maybe less useful with semantic chunking
-                # text += f"\n--- Page {page_num + 1} ---\n{page_text}"
-                text += page_text + "\n" # Add newline separator between pages
+                pages_content.append({"page": page_num + 1, "text": page_text})
     except Exception as e:
         st.error(f"Error reading PDF {pdf_file.name}: {e}")
         return None
-    return text
+    return pages_content
 
-def chunk_text(text, chunk_size, chunk_overlap, tokenizer):
-    """Splits text into chunks based on token count with overlap."""
-    if not text:
+def chunk_text(pages_content, chunk_size, chunk_overlap, tokenizer):
+    """Splits text into chunks based on token count with overlap, preserving page numbers."""
+    if not pages_content:
         return []
 
-    tokens = tokenizer.encode(text)
     chunks = []
-    start_index = 0
-    chunk_index = 0
+    current_chunk_index = 0
+    full_text = ""
+    page_indices = [] # Stores (start_char_index, page_number)
+
+    # Combine text and track page start indices
+    for page_info in pages_content:
+        page_start_index = len(full_text)
+        page_indices.append((page_start_index, page_info["page"]))
+        full_text += page_info["text"] + "\n" # Add newline separator
+
+    tokens = tokenizer.encode(full_text)
+    start_token_index = 0
     total_tokens = len(tokens)
 
-    while start_index < total_tokens:
-        end_index = min(start_index + chunk_size, total_tokens)
-        chunk_tokens = tokens[start_index:end_index]
+    while start_token_index < total_tokens:
+        end_token_index = min(start_token_index + chunk_size, total_tokens)
+        chunk_tokens = tokens[start_token_index:end_token_index]
         chunk_text = tokenizer.decode(chunk_tokens)
 
-        # Basic metadata - page number requires more advanced PDF parsing
+        # Determine the page number for the chunk
+        # Find the character index in the original full_text corresponding to the start_token_index
+        # This is an approximation: we decode tokens up to the start index to get char length
+        start_char_index_approx = len(tokenizer.decode(tokens[:start_token_index]))
+
+        chunk_page_number = 1 # Default to page 1
+        for page_start_char, page_num in reversed(page_indices):
+            if start_char_index_approx >= page_start_char:
+                chunk_page_number = page_num
+                break
+
         chunks.append({
-            "index": chunk_index,
+            "index": current_chunk_index,
             "content": chunk_text,
             "token_count": len(chunk_tokens),
-            "page_number": -1 # Placeholder - requires library like pdfminer.six for better mapping
+            "page_number": chunk_page_number
         })
 
-        start_index += chunk_size - chunk_overlap
-        if start_index >= end_index: # Prevent infinite loops if overlap >= size
-             start_index = end_index # Move to the next non-overlapping position
+        # Move the start index for the next chunk
+        next_start_token_index = start_token_index + chunk_size - chunk_overlap
+        # Ensure progress is made, especially if overlap is large or chunk_size is small
+        if next_start_token_index <= start_token_index:
+             next_start_token_index = start_token_index + 1 # Force minimal progress
 
-        chunk_index += 1
+        start_token_index = next_start_token_index
+        current_chunk_index += 1
 
     return chunks
 
@@ -192,21 +212,23 @@ def process_and_embed_document(uploaded_file, rag_config):
 
     # 1. Generate unique ID for the document
     doc_id = generate_doc_id(uploaded_file.name)
-    print(f"  [Process Doc] Generated doc_id: {doc_id}") # DEBUG
+    print(f"  [Process Doc] Generating doc_id: {doc_id}") # DEBUG
 
-    # 2. Extract text
+    # 2. Extract text (page by page)
     print(f"  [Process Doc] Extracting text...") # DEBUG
-    text = extract_text_from_pdf(uploaded_file)
-    if not text:
+    pages_content = extract_text_from_pdf(uploaded_file)
+    if not pages_content:
         print(f"  [Process Doc] Exiting: Text extraction failed.") # DEBUG
         st.warning(f"Could not extract text from {uploaded_file.name}. Skipping.")
         return None
-    print(f"  [Process Doc] Text extracted successfully ({len(text)} chars).") # DEBUG
+    # Calculate total chars for logging if needed (sum of lengths)
+    total_chars = sum(len(p['text']) for p in pages_content)
+    print(f"  [Process Doc] Text extracted successfully ({len(pages_content)} pages, {total_chars} chars).") # DEBUG
 
     # 3. Chunk text
     print(f"  [Process Doc] Chunking text...") # DEBUG
     tokenizer = get_tokenizer()
-    chunks = chunk_text(text, rag_config['chunk_size'], rag_config['chunk_overlap'], tokenizer)
+    chunks = chunk_text(pages_content, rag_config['chunk_size'], rag_config['chunk_overlap'], tokenizer)
     if not chunks:
         print(f"  [Process Doc] Exiting: No chunks generated.") # DEBUG
         st.warning(f"No text chunks generated for {uploaded_file.name}. Skipping.")
